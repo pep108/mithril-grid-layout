@@ -12,7 +12,6 @@
 - The version of mithril used in the initial development is unknown. I believe it is v1.1.2, but for some reason the grid wasn't rendering from v1.1.6 loaded via unpkg cdn.
 
 # Building with Rollup (not working) 
-# compile to a <script> containing a self-executing function ('iife')
 $ rollup main.js --file bundle.js --format iife
 
 or to use the config file:

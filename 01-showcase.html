@@ -1,0 +1,221 @@
+<html>
+<title>Mithril Grid Layout</title>
+
+<head>
+  <!-- <script src="https://unpkg.com/mithril@1.1.6/mithril.js" type="text/javascript"></script>
+  <script src="https://unpkg.com/lodash@4.17.11/lodash.js" type="text/javascript"></script> -->
+
+  <!-- Dependencies -->
+  <script src="deps/mithril.min.js" type="text/javascript"></script>
+  <script src="deps/lodash.min.js" type="text/javascript"></script>
+
+  <!-- Component Files -->
+
+  <!-- Draggable Files -->
+  <script src="draggable/utils/log.js" type="text/javascript"></script>
+  <script src="draggable/utils/shims.js" type="text/javascript"></script>
+  <script src="draggable/utils/getPrefix.js" type="text/javascript"></script>
+  <script src="draggable/utils/domFns.js" type="text/javascript"></script>
+  <script src="draggable/utils/positionFns.js" type="text/javascript"></script>
+  <script src="draggable/DraggableCore.js" type="text/javascript"></script>
+  <!-- <script src="draggable/Draggable.js" type="text/javascript"></script> -->
+
+  <!-- Grid Files -->
+  <script src="grid-layout/utils.js" type="text/javascript"></script>
+  <script src="grid-layout/GridItem.js" type="text/javascript"></script>
+  <script src="grid-layout/GridLayout.js" type="text/javascript"></script>
+  <!-- <script src="grid-layout/WidthProviderX.js" type="text/javascript"></script>
+      <script src="grid-layout/WidthProvider.js" type="text/javascript"></script> -->
+  <script src="grid-layout/responsiveUtils.js" type="text/javascript"></script>
+  <script src="grid-layout/ResponsiveGridLayout.js" type="text/javascript"></script>
+
+  <link href="style.css" rel="stylesheet" type="text/css" />
+</head>
+
+<body>
+  <div id="content">
+    <div></div>
+  </div>
+
+  <script>
+    var stringifyLayout = function (layout) {
+      return layout.map(function (l) {
+        return [
+          m('div', {
+              class: 'layoutItem',
+              key: l.i
+            },
+            m('b', l.i), ': [' + l.x + ',' + l.y + ',' + l.w + ',' + l.h + ']', l.static ? '(S)' : ''
+          )
+        ]
+      })
+    }
+
+    function generateLayout() {
+      return _.map(_.range(0, 25), function (item, i) {
+        var y = Math.ceil(Math.random() * 4) + 1;
+        return {
+          x: (_.random(0, 5) * 2) % 12,
+          y: Math.floor(i / 6) * y,
+          w: 2,
+          h: y,
+          i: i.toString(),
+          static: Math.random() < 0.05
+        };
+      });
+    }
+
+    var defaultProps = {
+      className: "layout",
+      rowHeight: 30,
+      onLayoutChange: function () {},
+      initialLayout: generateLayout(),
+      cols: { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 },
+    };
+
+    document.addEventListener("DOMContentLoaded", function () {
+      const contentDiv = document.getElementById("content");
+      const gridProps = window.gridProps || {};
+
+      m.mount(contentDiv, {
+        oninit: function (vnode) {
+          console.error('mounting....')
+          var self = this
+
+          vnode.attrs = Object.assign({}, vnode.attrs, defaultProps)
+
+
+          // Initialize the component state
+          Object.assign(self, {
+            currentBreakpoint: "lg",
+            compactType: "vertical",
+            mounted: false,
+            layouts: {
+              lg: defaultProps.initialLayout
+            },
+            //@pep Store the attrs because they may be lost on a future render
+            props: vnode.attrs
+          })
+
+          self.generateDOM = function () {
+            return _.map(self.layouts.lg, function (l, i) {
+              return m('div', {
+                  key: i,
+                  class: l.static ? 'static' : ''
+                },
+                l.static ? m('span', {
+                  class: 'text',
+                  title: 'This item is static and cannot be removed or resized.'
+                }, '- Static - ' + i) :
+                m('span', {
+                  class: 'text'
+                }, '-' + i + '-')
+              )
+            });
+          }
+
+          self.onBreakpointChange = function (breakpoint) {
+            console.info('onBreakpointChange....', breakpoint)
+            Object.assign(self, {
+              currentBreakpoint: breakpoint
+            })
+            m.redraw()
+          }
+
+          self.onWidthChange = function (containerWidth, margin, cols, containerPadding) {
+            console.info('onWidthChange.....', containerWidth)
+            self.props.width = containerWidth
+          }
+
+          self.onCompactTypeChange = function () {
+            const {
+              compactType: oldCompactType
+            } = self;
+            const compactType =
+              oldCompactType === "horizontal" ?
+              "vertical" :
+              oldCompactType === "vertical" ? null : "horizontal";
+            Object.assign(self, {
+              compactType: compactType
+            })
+          };
+
+          self.onLayoutChange = function (layout, layouts) {
+            console.warn('onLayoutChange..') //, layout, layouts)
+            // call the function passed into as an attribute
+            // vnode.attrs.onLayoutChange(layout, layouts);
+            m.redraw()
+          };
+
+          self.onNewLayout = function () {
+            console.log('onNewLayout....')
+            Object.assign(self.layouts, {
+              lg: generateLayout()
+            })
+            // m.redraw()
+          }
+
+        },
+        oncreate: function (vnode) {
+          var self = this
+          // self.mounted = true
+          m.redraw()
+        },
+        view: function (vnode) {
+          console.info('redraw')
+          var self = this
+
+          return [
+            m('div', {
+                class: 'layoutJSON'
+              },
+              'Displayed as ', m('code', '[x, y, w, y]'), ':',
+              m('div', {
+                class: 'columns'
+              }, stringifyLayout(self.layouts.lg))
+            ),
+            m('div',
+              'Current Breakpoint: ' + self.currentBreakpoint, '(' + self.props.cols[self.currentBreakpoint] +
+              ')', 'columns'
+            ),
+            m('div',
+              'Compaction type: ' + _.capitalize(self.compactType) || 'No Compaction'
+            ),
+            m('button', {
+              onclick: self.onNewLayout
+            }, 'Generate New Layout'),
+
+            m(ResponsiveMithrilGridLayout, {  //Object.assign({},
+              // From props
+              // ...self.props,
+              className: self.props.className,
+              cols: self.props.cols,
+              initialLayout: self.props.initialLayout,
+              onLayoutChange: self.props.onLayoutChange,
+              rowHeight: self.props.rowHeight,
+              // self.props, {
+                // These are from the attrs abov
+                layouts: self.layouts,
+                onBreakpointChange: self.onBreakpointChange,
+                onLayoutChange: self.onLayoutChange,
+                onWidthChange: self.onWidthChange,
+                // WidthProvider option
+                measureBeforeMount: true,
+                // I like to have it animate on mount. If you don't, delete `useCSSTransforms` (it's default `true`)
+                // and set `measureBeforeMount={true}`.
+                useCSSTransforms: self.mounted,
+                compactType: self.compactType,
+                preventCollision: !self.compactType,
+                children: self.generateDOM()
+              // }))
+            })
+          ]
+        }
+      })
+      // ReactDOM.render(React.createElement(ExampleLayout, gridProps), contentDiv);
+
+    });
+  </script>
+</body>
+
+</html>

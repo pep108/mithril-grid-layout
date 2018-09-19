@@ -1,0 +1,510 @@
+var GridItem = (function () {
+
+  const { setTransform, setTopLeft, perc } = GridLayoutUtils
+
+  // Component Structure
+  return {
+    oninit: function (vnode) {
+      var self = this
+      
+      self.defaultAttrs = {
+        className: '',
+        cancel: '',
+        handle: '',
+        minH: 1,
+        minW: 1,
+        maxH: Infinity,
+        maxW: Infinity
+      };
+  
+      // Assign the default values to the attrs
+      _.forEach(self.defaultAttrs, function (val, key) {
+        // console.log('key: ', key)
+        if (!vnode.attrs[key]) {
+          vnode.attrs[key] = val
+        }
+      })
+      
+      Object.assign(self, vnode.attrs, {
+        resizing: null,
+        dragging: null,
+        className: ''
+      })
+      // console.error('these are the attrs: ', vnode.attrs)
+
+      vnode.key = vnode.attrs.key
+      // console.error('vnode: ', vnode)
+      
+
+      // Helper for generating column width
+      self.calcColWidth = function () {
+        var self = this;
+        const { margin, containerPadding, containerWidth, cols } = self;
+        // console.log('colWidth: ', self)
+        // console.log('cols: ', cols)
+        return (
+          (containerWidth - margin[0] * (cols - 1) - containerPadding[0] * 2) / cols
+        );
+      }
+
+      /**
+       * Return position on the page given an x, y, w, h.
+       * left, top, width, height are all in pixels.
+       * @param  {Number}  x             X coordinate in grid units.
+       * @param  {Number}  y             Y coordinate in grid units.
+       * @param  {Number}  w             W coordinate in grid units.
+       * @param  {Number}  h             H coordinate in grid units.
+       * @return {Object}                Object containing coords.
+       */
+      self.calcPosition = function (x, y, w, h, state) {
+        // console.log('calcPosition...', x, y, w, h, state)
+        const { margin, containerPadding, rowHeight } = vnode.attrs;  //state;  //vnode.attrs;
+        const colWidth = self.calcColWidth(state);
+
+        // console.log('colWidth: ', colWidth)
+        // console.log('rowHeight: ', rowHeight)
+        // console.log('margin: ', margin)
+        // console.log('containerPadding[1]: ', containerPadding[1])
+        // console.log('width: ', Math.round(colWidth * w + Math.max(0, w - 1) * margin[0]))
+
+        const out = {
+          left: Math.round((colWidth + margin[0]) * x + containerPadding[0]),
+          top: Math.round((rowHeight + margin[1]) * y + containerPadding[1]),
+          // 0 * Infinity === NaN, which causes problems with resize constraints;
+          // Fix this if it occurs.
+          // Note we do it here rather than later because Math.round(Infinity) causes deopt
+          width:
+            w === Infinity
+              ? w
+              : Math.round(colWidth * w + Math.max(0, w - 1) * margin[0]),
+          height:
+            h === Infinity
+              ? h
+              : Math.round(rowHeight * h + Math.max(0, h - 1) * margin[1])
+        };
+        // console.log('colWidth: ', colWidth, out)
+
+        if (state && state.resizing) {
+          out.width = Math.round(state.resizing.width);
+          out.height = Math.round(state.resizing.height);
+        }
+
+        if (state && state.dragging) {
+          out.top = Math.round(state.dragging.top);
+          out.left = Math.round(state.dragging.left);
+        }
+
+        return out;
+      }
+
+      /**
+       * Translate x and y coordinates from pixels to grid units.
+       * @param  {Number} top  Top position (relative to parent) in pixels.
+       * @param  {Number} left Left position (relative to parent) in pixels.
+       * @return {Object} x and y in grid units.
+       */
+      // calcXY(top: number, left: number): { x: number, y: number } {
+      self.calcXY = function (top, left) {
+        // console.log('calcXY.....', top, left)
+        const { margin, cols, rowHeight, w, h, maxRows } = self;
+        const colWidth = self.calcColWidth()
+
+        let x = Math.round((left - margin[0]) / (colWidth + margin[0]));
+        let y = Math.round((top - margin[1]) / (rowHeight + margin[1]));
+
+        // Capping
+        x = Math.max(Math.min(x, cols - w), 0);
+        y = Math.max(Math.min(y, maxRows - h), 0);
+
+        return { x, y };
+      }
+
+      /**
+       * Given a height and width in pixel values, calculate grid units.
+       * @param  {Number} height Height in pixels.
+       * @param  {Number} width  Width in pixels.
+       * @return {Object} w, h as grid units.
+       */
+      // calcWH({ height, width }: { height: number, width: number }): { w: number, h: number } {
+      self.calcWH = function (pos) {
+        const { height, width } = pos
+        const { margin, maxRows, cols, rowHeight, x, y } = self;
+        const colWidth = self.calcColWidth();
+
+        let w = Math.round((width + margin[0]) / (colWidth + margin[0]));
+        let h = Math.round((height + margin[1]) / (rowHeight + margin[1]));
+
+        // Capping
+        w = Math.max(Math.min(w, cols - x), 0);
+        h = Math.max(Math.min(h, maxRows - y), 0);
+        return { w, h };
+      }
+
+      /**
+       * This is where we set the grid item's absolute placement. It gets a little tricky because we want to do it
+       * well when server rendering, and the only way to do that properly is to use percentage width/left because
+       * we don't know exactly what the browser viewport is.
+       * Unfortunately, CSS Transforms, which are great for performance, break in this instance because a percentage
+       * left is relative to the item itself, not its container! So we cannot use them on the server rendering pass.
+       *
+       * @param  {Object} pos Position object with width, height, left, top.
+       * @return {Object}     Style object.
+       */
+      // createStyle(pos: Position): { [key: string]: ?string } {
+      self.createStyle = function (pos) {
+        const { usePercentages, containerWidth, useCSSTransforms } = self;
+        // console.warn('creating style: ', self, vnode)
+        let style;
+        // CSS Transforms support (default)
+        if (useCSSTransforms) {
+          style = setTransform(pos);
+          // console.error('using cssTransform....', style, pos)
+        } else {
+          // console.error('using the slow way.....')
+          // top,left (slow)
+          style = setTopLeft(pos);
+
+          // This is used for server rendering.
+          if (usePercentages) {
+            style.left = perc(pos.left / containerWidth);
+            style.width = perc(pos.width / containerWidth);
+          }
+        }
+            
+        // console.error('calc style....', style)
+        return style;
+      }
+
+      /**
+       * Mix a Draggable instance into a child.
+       * @param  {Element} child    Child element.
+       * @return {Element}          Child wrapped in Draggable.
+       */
+      // mixinDraggable(child: ReactElement<any>): ReactElement<any> {
+      self.mixinDraggable = function (child) {
+        // console.error('mixinDraggable.....', child, self)
+
+        return m(DraggableCore, {
+            onStart: self.onDragHandler('onDragStart'),
+            onDrag: self.onDragHandler('onDrag'),
+            onStop: self.onDragHandler('onDragStop'),
+            handle: self.handle,
+            cancel: '.react-resizable-handle' + 
+                    (vnode.attrs.cancel ? ',' + vnode.attrs.cancel : ''),
+
+            vnode: child
+          }
+          // NOTE: We should be able to nest children in this manner, but it seems
+          // to be a mithril anti-pattern because we would then need to manipulate
+          // the children directly. Better to pass along with attrs and render 
+          // from there
+          // , child
+        )
+        // return (
+        //   <DraggableCore
+        //     onStart={this.onDragHandler("onDragStart")}
+        //     onDrag={this.onDragHandler("onDrag")}
+        //     onStop={this.onDragHandler("onDragStop")}
+        //     handle={this.props.handle}
+        //     cancel={
+        //       ".react-resizable-handle" +
+        //       (this.props.cancel ? "," + this.props.cancel : "")
+        //     }
+        //   >
+        //     {child}
+        //   </DraggableCore>
+        // );
+      }
+
+      /**
+       * Mix a Resizable instance into a child.
+       * @param  {Element} child    Child element.
+       * @param  {Object} position  Position object (pixel values)
+       * @return {Element}          Child wrapped in Resizable.
+       */
+      // mixinResizable(
+      //   child: ReactElement<any>,
+      //   position: Position
+      // ): ReactElement<any> {
+      self.mixinResizable = function (child, position) {
+        // const { cols, x, minW, minH, maxW, maxH } = this.props;
+
+        // // This is the max possible width - doesn't go to infinity because of the width of the window
+        // const maxWidth = this.calcPosition(0, 0, cols - x, 0).width;
+
+        // // Calculate min/max constraints using our min & maxes
+        // const mins = this.calcPosition(0, 0, minW, minH);
+        // const maxes = this.calcPosition(0, 0, maxW, maxH);
+        // const minConstraints = [mins.width, mins.height];
+        // const maxConstraints = [
+        //   Math.min(maxes.width, maxWidth),
+        //   Math.min(maxes.height, Infinity)
+        // ];
+        // return (
+        //   <Resizable
+        //     width={position.width}
+        //     height={position.height}
+        //     minConstraints={minConstraints}
+        //     maxConstraints={maxConstraints}
+        //     onResizeStop={this.onResizeHandler("onResizeStop")}
+        //     onResizeStart={this.onResizeHandler("onResizeStart")}
+        //     onResize={this.onResizeHandler("onResize")}
+        //   >
+        //     {child}
+        //   </Resizable>
+        // );
+      }
+
+      /**
+       * Wrapper around drag events to provide more useful data.
+       * All drag events call the function with the given handler name,
+       * with the signature (index, x, y).
+       *
+       * @param  {String} handlerName Handler name to wrap.
+       * @return {Function}           Handler function.
+       */
+      // onDragHandler(handlerName: string) {
+      function onDragHandler (handlerName) {
+        // return (e: Event, { node, deltaX, deltaY }: ReactDraggableCallbackData) => {
+        return function (e, { node, deltaX, deltaY }) {
+          // console.warn('onDragHandler...', vnode, this, handlerName)
+          const handler = vnode.attrs[handlerName];
+          if (!handler) return;
+
+          const newPosition = { top: 0, left: 0 };
+
+          // Get new XY
+          switch (handlerName) {
+            case "onDragStart": {
+              // TODO: this wont work on nested parents
+              const { offsetParent } = node;
+              if (!offsetParent) return;
+              const parentRect = offsetParent.getBoundingClientRect();
+              const clientRect = node.getBoundingClientRect();
+              newPosition.left =
+              clientRect.left - parentRect.left + offsetParent.scrollLeft;
+              newPosition.top =
+              clientRect.top - parentRect.top + offsetParent.scrollTop;
+              console.error('onDragStart....', newPosition)
+              Object.assign(self, { dragging: newPosition })
+              break;
+            }
+            case "onDrag":
+              if (!self.dragging)
+                throw new Error("onDrag called before onDragStart.");
+              newPosition.left = self.dragging.left + deltaX;
+              newPosition.top = self.dragging.top + deltaY;
+              // console.error('onDrag....', newPosition, self.dragging)
+              Object.assign(self, { dragging: newPosition })
+              break;
+            case "onDragStop":
+              if (!self.dragging)
+                throw new Error("onDragEnd called before onDragStart.");
+              newPosition.left = self.dragging.left;
+              newPosition.top = self.dragging.top;
+              console.error('onDragStop....', newPosition)
+              Object.assign(self, { dragging: null })
+              break;
+            default:
+              throw new Error(
+                "onDragHandler called with unrecognized handlerName: " + handlerName
+              );
+          }
+          
+          const { x, y } = self.calcXY(newPosition.top, newPosition.left);
+
+          // return handler.call(this, this.props.i, x, y, { e, node, newPosition });
+          return handler.call(self, vnode.attrs.i, x, y, { e, node, newPosition });
+        };
+      }
+      self.onDragHandler = onDragHandler
+
+      /**
+       * Wrapper around drag events to provide more useful data.
+       * All drag events call the function with the given handler name,
+       * with the signature (index, x, y).
+       *
+       * @param  {String} handlerName Handler name to wrap.
+       * @return {Function}           Handler function.
+       */
+      // onResizeHandler(handlerName: string) {
+      self.onResizeHandler = function (handlerName) {
+        // return (
+        //   e: Event,
+        //   { node, size }: { node: HTMLElement, size: Position }
+        // ) => {
+        return function (e, { node, size }) {
+          const handler = self.props[handlerName];
+          if (!handler) return;
+          const { cols, x, i, maxW, minW, maxH, minH } = self.props;
+
+          // Get new XY
+          let { w, h } = self.calcWH(size);
+
+          // Cap w at numCols
+          w = Math.min(w, cols - x);
+          // Ensure w is at least 1
+          w = Math.max(w, 1);
+
+          // Min/max capping
+          w = Math.max(Math.min(w, maxW), minW);
+          h = Math.max(Math.min(h, maxH), minH);
+
+          // this.setState({ resizing: handlerName === "onResizeStop" ? null : size });
+          Object.assign(self, { resizing: handlerName === "onResizeStop" ? null : size });
+
+          handler.call(self, i, w, h, { e, node, size });
+        };
+      }
+
+      // console.warn('GridItem vnode: ', vnode)
+      // console.warn('GridItem attrs: ', vnode.attrs)
+      // console.warn('GridItem self: ', self)
+    },
+    onbeforeupdate: function (vnode, old) {
+      // if (vnode.key !== 4) {
+      //   return false
+      // }
+      return true
+
+      if (vnode.state.dragging) {
+        return true
+      }
+      // console.log('onbeforeupdate.....', vnode, old)
+      if (vnode.state.dragging === old.state.dragging) {
+        // console.warn('false...')
+        return false
+      }
+    },
+    view: function (vnode) {
+      // console.error('GridItem view....', vnode.attrs.containerWidth)
+      var self = this
+      var attrs = vnode.attrs
+
+      const {
+        x,
+        y,
+        w,
+        h,
+        isDraggable,
+        isResizable,
+        useCSSTransforms
+      } = attrs;
+      
+      const pos = self.calcPosition(x, y, w, h, self);
+
+      // const child = React.Children.only(this.props.children);
+      
+      var buildCss = function () {
+        return 'react-grid-item ' + (attrs.className || '') + 
+                  (attrs.static ? ' static' : '') + 
+                  (isDraggable ? ' react-draggable' : '') + 
+                  (self.dragging ? ' react-draggable-dragging' : '') + 
+                  (useCSSTransforms ? ' cssTransforms' : '')
+
+      }
+      // var style = self.createStyle(pos)
+
+      // console.error('attrs.class: ', attrs.class, attrs.className, vnode.state.dragging)
+      // if (self.dragging || attrs.placeholder) {
+      //   console.warn('*GridItem... vnode', vnode)
+      //   console.warn('GridItem self: ', self)
+      //   console.warn('GridItem... vnode.attrs', JSON.parse(JSON.stringify(attrs)))
+      //   console.log('dragging: ', JSON.parse(JSON.stringify(self.dragging)))
+      //   console.log('pos: ', pos)
+      //   // console.warn('dragging: ', JSON.parse(JSON.stringify(self.dragging)))
+      // }
+
+      //** BE CAREFUL HERE!! */
+      // NOTE: This must be done AFTER we run createStyle for the first time, 
+      // otherwise we will end up animating the initial render
+      // We want to keep the state up to date
+      Object.assign(self, {
+        useCSSTransforms: attrs.useCSSTransforms,
+        // usePercentages: attrs.usePercentages
+      })
+        
+      // console.error('checkpoint....', style)
+      
+      // Create the child element. We clone the existing element but modify its className and style.
+      let newChild = m(self.vnode.tag, { class: buildCss(), style: self.createStyle(pos) }, self.vnode.children)
+      // console.warn('newChild: ', newChild)
+      // return newChild
+      
+      // if (attrs.placeholder) {
+      //   console.error('placeholder attrs: ', attrs)
+      // }
+
+      // ----------------------------------------------------------------------------
+      // ----------------------------------------------------------------------------
+      // Resizable support. This is usually on but the user can toggle it off.
+      // if (isResizable) newChild = self.mixinResizable(newChild, pos);
+    
+      // TODO - need to fix this
+      // Draggable support. This is always on, except for with placeholders.
+      if (isDraggable) newChild = self.mixinDraggable(newChild);
+      // console.warn('newChild: ', newChild)
+
+      // Render the GridItem
+      return newChild
+
+      // NOTE: This works to re-use the vnode
+      // return m(self.vnode.tag, { class: css, style: style }, self.vnode.children)
+      // return m.fragment({ class: css, style: style }, vnode.children)
+
+      // ----------------------------------------------------------------------------
+      // ----------------------------------------------------------------------------
+
+
+
+
+      // Create the child element. We clone the existing element but modify its className and style.
+      // let newChild = React.cloneElement(child, {
+      //   className: classNames(
+      //     "react-grid-item",
+      //     child.props.className,
+      //     this.props.className,
+      //     {
+      //       static: this.props.static,
+      //       resizing: Boolean(this.state.resizing),
+      //       "react-draggable": isDraggable,
+      //       "react-draggable-dragging": Boolean(this.state.dragging),
+      //       cssTransforms: useCSSTransforms
+      //     }
+      //   ),
+      //   // We can set the width and height on the child, but unfortunately we can't set the position.
+      //   style: {
+      //     ...this.props.style,
+      //     ...child.props.style,
+      //     ...this.createStyle(pos)
+      //   }
+      // });
+      
+      // // Resizable support. This is usually on but the user can toggle it off.
+      // if (isResizable) newChild = this.mixinResizable(newChild, pos);
+    
+      // // Draggable support. This is always on, except for with placeholders.
+      // if (isDraggable) newChild = this.mixinDraggable(newChild);
+      // return newChild;
+
+      // Render the GridItem
+      // return vnode.children
+      // vnode.children.map(function (child) {
+      //   return m(child.)
+      // })
+      // return m('div', vnode.attrs, vnode.children)
+          
+      // This is where the children go....
+      // return m('div', { key: vnode.key, class: css, style: style },
+      //   attrs.static ? [
+      //     m('span', { class: 'text', title: 'This item is static and cannot be removed or resized.' }, 'Static - ' + vnode.key)
+      //   ] : [
+      //     m('span', { class: 'text' }, vnode.key + '**')
+      //   ]
+      // )
+    }
+  }
+  
+})();
+
+module.exports = GridItem;

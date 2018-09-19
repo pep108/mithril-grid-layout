@@ -1,0 +1,235 @@
+var GridItem = (function () {
+
+  var Utils = GridLayoutUtils
+
+  var Component = {
+    oninit: function (vnode) {
+      var self = this
+          
+      // self.props = Object.assign({}, vnode.attrs)
+      vnode.key = vnode.attrs.key
+
+      // console.error('vnode: ', vnode)
+      
+
+      // Helper for generating column width
+      self.calcColWidth = function () {
+        const { margin, containerPadding, containerWidth, cols } = self;
+        // console.log('colWidth: ', self)
+        return (
+          (containerWidth - margin[0] * (cols - 1) - containerPadding[0] * 2) / cols
+        );
+      }
+
+      /**
+       * Return position on the page given an x, y, w, h.
+       * left, top, width, height are all in pixels.
+       * @param  {Number}  x             X coordinate in grid units.
+       * @param  {Number}  y             Y coordinate in grid units.
+       * @param  {Number}  w             W coordinate in grid units.
+       * @param  {Number}  h             H coordinate in grid units.
+       * @return {Object}                Object containing coords.
+       */
+      self.calcPosition = function (x, y, w, h, state) {
+        // console.log('calcPosition...', x, y, w, h, state)
+        const { margin, containerPadding, rowHeight } = state;  //vnode.attrs;
+        const colWidth = self.calcColWidth(state);
+
+        // console.log('colWidth: ', colWidth)
+        // console.log('rowHeight: ', rowHeight)
+        // console.log('margin: ', margin)
+        // console.log('containerPadding[1]: ', containerPadding[1])
+        // console.log('width: ', Math.round(colWidth * w + Math.max(0, w - 1) * margin[0]))
+
+        const out = {
+          left: Math.round((colWidth + margin[0]) * x + containerPadding[0]),
+          top: Math.round((rowHeight + margin[1]) * y + containerPadding[1]),
+          // 0 * Infinity === NaN, which causes problems with resize constraints;
+          // Fix this if it occurs.
+          // Note we do it here rather than later because Math.round(Infinity) causes deopt
+          width:
+            w === Infinity
+              ? w
+              : Math.round(colWidth * w + Math.max(0, w - 1) * margin[0]),
+          height:
+            h === Infinity
+              ? h
+              : Math.round(rowHeight * h + Math.max(0, h - 1) * margin[1])
+        };
+        // console.log('colWidth: ', colWidth, out)
+
+        if (state && state.resizing) {
+          out.width = Math.round(state.resizing.width);
+          out.height = Math.round(state.resizing.height);
+        }
+
+        if (state && state.dragging) {
+          out.top = Math.round(state.dragging.top);
+          out.left = Math.round(state.dragging.left);
+        }
+
+        return out;
+      }
+
+      /**
+       * Translate x and y coordinates from pixels to grid units.
+       * @param  {Number} top  Top position (relative to parent) in pixels.
+       * @param  {Number} left Left position (relative to parent) in pixels.
+       * @return {Object} x and y in grid units.
+       */
+      // calcXY(top: number, left: number): { x: number, y: number } {
+      self.calcXY = function (top, left) {
+        const { margin, cols, rowHeight, w, h, maxRows } = self;
+        const colWidth = self.calcColWidth()
+
+        let x = Math.round((left - margin[0]) / (colWidth + margin[0]));
+        let y = Math.round((top - margin[1]) / (rowHeight + margin[1]));
+
+        // Capping
+        x = Math.max(Math.min(x, cols - w), 0);
+        y = Math.max(Math.min(y, maxRows - h), 0);
+
+        return { x, y };
+      }
+
+      /**
+       * Given a height and width in pixel values, calculate grid units.
+       * @param  {Number} height Height in pixels.
+       * @param  {Number} width  Width in pixels.
+       * @return {Object} w, h as grid units.
+       */
+      // calcWH({ height, width }: { height: number, width: number }): { w: number, h: number } {
+      self.calcWH = function (pos) {
+        const { height, width } = pos
+        const { margin, maxRows, cols, rowHeight, x, y } = self;
+        const colWidth = self.calcColWidth();
+
+        let w = Math.round((width + margin[0]) / (colWidth + margin[0]));
+        let h = Math.round((height + margin[1]) / (rowHeight + margin[1]));
+
+        // Capping
+        w = Math.max(Math.min(w, cols - x), 0);
+        h = Math.max(Math.min(h, maxRows - y), 0);
+        return { w, h };
+      }
+
+      /**
+       * This is where we set the grid item's absolute placement. It gets a little tricky because we want to do it
+       * well when server rendering, and the only way to do that properly is to use percentage width/left because
+       * we don't know exactly what the browser viewport is.
+       * Unfortunately, CSS Transforms, which are great for performance, break in this instance because a percentage
+       * left is relative to the item itself, not its container! So we cannot use them on the server rendering pass.
+       *
+       * @param  {Object} pos Position object with width, height, left, top.
+       * @return {Object}     Style object.
+       */
+      // createStyle(pos: Position): { [key: string]: ?string } {
+      self.createStyle = function (pos) {
+        const { usePercentages, containerWidth, useCSSTransforms } = self;
+        // console.warn('creating style: ', self.state)
+        let style;
+        // CSS Transforms support (default)
+        if (useCSSTransforms) {
+          style = Utils.setTransform(pos);
+        } else {
+          // top,left (slow)
+          style = Utils.setTopLeft(pos);
+
+          // This is used for server rendering.
+          if (usePercentages) {
+            style.left = Utils.perc(pos.left / containerWidth);
+            style.width = Utils.perc(pos.width / containerWidth);
+          }
+        }
+            
+        // console.error('calc style....', style)
+        return style;
+      }
+
+        // console.warn('GridItem vnode: ', vnode)
+        // console.warn('GridItem attrs: ', vnode.attrs)
+        // console.warn('GridItem self: ', self)
+      },
+      view: function (vnode) {
+        var self = this
+        var attrs = vnode.attrs
+        // console.warn('*GridItem... vnode', vnode)
+        // console.warn('GridItem self: ', self)
+        // console.warn('GridItem... attrs', attrs)
+        Object.assign(self, attrs)
+        // self.state = attrs
+
+        const {
+          x,
+          y,
+          w,
+          h,
+          isDraggable,
+          isResizable,
+          useCSSTransforms
+        } = attrs;
+      
+        const pos = self.calcPosition(x, y, w, h, attrs);
+        // if (!isNaN(pos.left)) {
+          // console.warn('pos: ', pos)
+        // }
+
+
+        if (!attrs.containerWidth) return
+
+        // const child = React.Children.only(this.props.children);
+        var css = 'react-grid-item' + (attrs.css || '') + 
+                  (attrs.static ? ' static' : '') + 
+                  (isDraggable ? ' react-draggable' : '') + 
+                  (self.dragging ? ' react-draggable-dragging' : '') + 
+                  (useCSSTransforms ? ' cssTransforms' : '')
+        var style = self.createStyle(pos)
+        
+        // console.error('checkpoint....', style)
+        // return vnode.children
+      
+        // // Create the child element. We clone the existing element but modify its className and style.
+        // let newChild = React.cloneElement(child, {
+        //   className: classNames(
+        //     "react-grid-item",
+        //     child.props.className,
+        //     this.props.className,
+        //     {
+        //       static: this.props.static,
+        //       resizing: Boolean(this.state.resizing),
+        //       "react-draggable": isDraggable,
+        //       "react-draggable-dragging": Boolean(this.state.dragging),
+        //       cssTransforms: useCSSTransforms
+        //     }
+        //   ),
+        //   // We can set the width and height on the child, but unfortunately we can't set the position.
+        //   style: {
+        //     ...this.props.style,
+        //     ...child.props.style,
+        //     ...this.createStyle(pos)
+        //   }
+        // });
+      
+        // // Resizable support. This is usually on but the user can toggle it off.
+        // if (isResizable) newChild = this.mixinResizable(newChild, pos);
+      
+        // // Draggable support. This is always on, except for with placeholders.
+        // if (isDraggable) newChild = this.mixinDraggable(newChild);
+        // return newChild;
+          
+        // This is where the children go....
+        return m('div', { key: vnode.key, class: css, style: style },
+          attrs.static ? [
+            m('span', { class: 'text', title: 'This item is static and cannot be removed or resized.' }, 'Static - ' + vnode.key)
+          ] : [
+            m('span', { class: 'text' }, vnode.key)
+          ]
+        )
+      }
+    }
+
+    return {
+      Component: Component
+    }
+  
+})();

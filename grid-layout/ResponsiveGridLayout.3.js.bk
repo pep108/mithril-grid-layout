@@ -1,0 +1,297 @@
+
+var ResponsiveMithrilGridLayout = (function () {
+  'use strict'
+
+  const {
+    getBreakpointFromWidth,
+    getColsFromBreakpoint,
+    findOrGenerateResponsiveLayout
+  } = ResponsiveUtils
+  
+  const {
+    cloneLayout,
+    synchronizeLayoutWithChildren,
+    noop
+  } = GridLayoutUtils
+
+  function oninit (vnode) {
+    // console.error('************', vnode)
+    var self = this
+
+    var defaultAttrs = {
+      breakpoints: { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 },
+      cols: { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 },
+      layouts: {},
+      onBreakpointChange: noop,
+      onLayoutChange: noop,
+      onWidthChange: noop
+    };
+
+    // Assign the default values to the attrs
+    _.forEach(defaultAttrs, function (val, key) {
+      // console.log('key: ', key)
+      if (!vnode.attrs[key]) {
+        vnode.attrs[key] = val
+      }
+    })
+
+    // Save the props so they don't get lost
+    self.props = vnode.attrs
+    
+    // console.warn('Responsive onInit2: ', self, vnode.attrs)
+    
+
+    self.generateInitialState = function () {
+      // console.log('generateInitialState... attrs', vnode.attrs)
+      var attrs = vnode.attrs
+      // console.warn('generateInitialState: self, attrs', self, attrs)
+      const { width, breakpoints, layouts, cols } = attrs;
+
+      // console.log('width: ', width)
+      // console.log('breakpoints: ', breakpoints)
+      // console.log('layouts: ', layouts)
+      // console.log('cols: ', cols)
+
+      const breakpoint = getBreakpointFromWidth(breakpoints, width);
+      const colNo = getColsFromBreakpoint(breakpoint, cols);
+      // verticalCompact compatibility, now deprecated
+      const compactType =
+        attrs.verticalCompact === false ? null : attrs.compactType;
+      // Get the initial layout. This can tricky; we try to generate one however possible if one doesn't exist
+      // for this layout.
+      const initialLayout = findOrGenerateResponsiveLayout(
+        layouts,
+        breakpoints,
+        breakpoint,
+        breakpoint,
+        colNo,
+        compactType
+      );
+  
+      return {
+        layout: initialLayout,
+        breakpoint: breakpoint,
+        cols: colNo
+      };
+    }
+
+    // wrap layouts so we do not need to pass layouts to child
+    self.props.onLayoutChange = function (layout) {
+      console.error('onLayoutChange....', layout)
+      vnode.attrs.onLayoutChange(layout, {
+        ...vnode.attrs.layouts,
+        [self.breakpoint]: layout
+      });
+    };
+
+    /**
+     * When the width changes work through breakpoints and reset state with the new width & breakpoint.
+     * Width changes are necessary to figure out the widget widths.
+     */
+    self.props.onWidthChange = function (nextProps) {
+      console.log('---------------------------------')
+      console.warn('*onWidthChange..... ', nextProps)
+      console.log('attrs, vnode.attrs, self: ', vnode.attrs, self)
+      const { breakpoints, cols, layouts, compactType } = nextProps   //self //nextProps;
+      // const compactType = 'vertical'
+      // console.log('breakpoints: ', breakpoints)
+      // console.log('cols: ', cols)
+      // console.log('layouts: ', layouts)
+      // console.log('compactType: ', compactType)
+      console.log('---------------------------------')
+      const newBreakpoint =
+        nextProps.breakpoint ||
+        getBreakpointFromWidth(nextProps.breakpoints, nextProps.width);
+      console.log('newBreakpoint:', newBreakpoint)
+
+      const lastBreakpoint = self.breakpoint;
+      console.log('lastBreakpoint:', lastBreakpoint)
+      const newCols = getColsFromBreakpoint(newBreakpoint, cols);
+
+      // Breakpoint change
+      if (
+        lastBreakpoint !== newBreakpoint ||
+        self.props.breakpoints !== breakpoints ||
+        self.props.cols !== cols
+      ) {
+        // Preserve the current layout if the current breakpoint is not present in the next layouts.
+        console.log('checkpoint #1')
+        if (!(lastBreakpoint in layouts))
+          layouts[lastBreakpoint] = cloneLayout(self.layout);
+
+        // Find or generate a new layout.
+        let layout = findOrGenerateResponsiveLayout(
+          layouts,
+          breakpoints,
+          newBreakpoint,
+          lastBreakpoint,
+          newCols,
+          compactType
+        );
+
+        // This adds missing items.
+        layout = synchronizeLayoutWithChildren(
+          layout,
+          nextProps.children,
+          newCols,
+          compactType
+        );
+
+        // Store the new layout.
+        layouts[newBreakpoint] = layout;
+
+        // callbacks
+        // vnode.attrs.onLayoutChange(layout, layouts);
+        // vnode.attrs.onBreakpointChange(newBreakpoint, newCols);
+        vnode.attrs.onLayoutChange(layout, layouts);
+        vnode.attrs.onBreakpointChange(newBreakpoint, newCols);
+
+        Object.assign(self, {
+          breakpoint: newBreakpoint,
+          layout: layout,
+          cols: newCols
+        })
+      }
+
+      // NOTE: Because the props and attrs are merged, this function does not work :/
+      // call onWidthChange on every change of width, not only on breakpoint changes
+      // vnode.attrs.onWidthChange(
+      //   nextProps.width,
+      //   nextProps.margin,
+      //   newCols,
+      //   nextProps.containerPadding
+      // );
+    }
+
+    self.props.onWindowResize = function (width) {
+      console.error('onWindowRezie in ResponsiveGrid', width)
+      self.props.width = width
+      // vnode.attrs.width = width
+    }
+  }
+
+  function oncreate (vnode) {
+    var self = this
+    // console.error('oncreate executed...', vnode.dom.offsetWidth)
+
+    self.mounted = true
+
+    // NOTE: We need the width before we call generateInitialState or it will fail
+    var width = vnode.dom.offsetWidth
+    vnode.attrs.width = width
+    
+    // Initialize the state
+    Object.assign(self, self.generateInitialState())
+    m.redraw()
+  }
+
+  function view (vnode) {
+    var self = this
+
+    // Need to return a div so we can get it's width
+    if (!self.mounted) return m('div')
+
+    var self = this
+    var attrs = vnode.attrs
+    self.mounted = true
+
+    Object.assign(attrs, {
+      breakpoint: self.breakpoint,
+      breakpoints: self.props.breakpoints
+    })
+
+    if (
+      // NOTE: The attrs that are passed in NEVER have the width. That is added by this
+      // module in the oncreate funtion
+      // attrs.width !== self.props.width ||
+      self.width !== self.props.width || 
+      // attrs.breakpoint !== self.props.breakpoint ||
+      // !_.isEqual(attrs.breakpoints, self.breakpoints) ||
+      // !_.isEqual(attrs.breakpoints, self.props.breakpoints) ||
+      // !_.isEqual(attrs.cols, self.cols)
+      !_.isEqual(attrs.cols, self.props.cols)
+    ) {
+      console.warn('***checkpoint #2', attrs)
+      self.width = self.props.width
+      // attrs.width = self.props.width
+      Object.assign(attrs, {
+        width: self.width,
+        // breakpoint: self.breakpoint,
+        breakpoints: self.props.breakpoints
+      })
+
+      self.props.onWidthChange(attrs);
+    } else if (!_.isEqual(attrs.layouts, self.layouts)) {
+      // console.log('checkpoint #3', attrs)
+      // Allow parent to set layouts directly.
+      const { breakpoint, cols } = self;
+  
+      // Since we're setting an entirely new layout object, we must generate a new responsive layout
+      // if one does not exist.
+      const newLayout = findOrGenerateResponsiveLayout(
+        attrs.layouts,
+        attrs.breakpoints,
+        breakpoint,
+        breakpoint,
+        cols,
+        attrs.compactType
+      );
+      Object.assign(self, {
+        layout: newLayout
+      })
+      // this.setState({ layout: newLayout });
+    }
+
+      /* eslint-disable no-unused-vars */
+      // const {
+      //   breakpoint,
+      //   breakpoints,
+      //   cols,
+      //   layouts,
+      //   onBreakpointChange,
+      //   onLayoutChange,
+      //   onWidthChange,
+      //   ...other
+      // } = attrs;
+      /* eslint-enable no-unused-vars */
+
+      // console.error('self:', self)
+  
+
+      // A WidthProvider is necessary to wrap the Grid because it needs with width 
+      // of the container to render
+      // return m(WidthProvider, {
+      //           measureBeforeMount: true,  //PropTypes.bool
+      //         },
+      return m(MithrilGridLayout, {
+        children: attrs.children,
+        className: attrs.className,
+        compactType: attrs.compactType,
+        initialLayout: attrs.initialLayout,
+        preventCollision: attrs.preventCollision,
+        rowHeight: attrs.rowHeight,
+        useCSSTransforms: attrs.useCSSTransforms,
+        width: self.props.width,
+        onLayoutChange: self.onLayoutChange,
+        onWindowResize: self.props.onWindowResize,
+        layout: self.layout,
+        cols: self.cols
+      })
+    
+      // return (
+      //   <ReactGridLayout
+      //     {...other}
+      //     onLayoutChange={this.onLayoutChange}
+      //     layout={this.state.layout}
+      //     cols={this.state.cols}
+      //   />
+      // );      
+  }
+
+  return {
+    oninit: oninit,
+    oncreate: oncreate,
+    view: view 
+  }
+
+})();
